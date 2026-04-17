@@ -32,7 +32,7 @@ PLAYER_SPEED_X = 160
 PLAYER_SPEED_Y = 235
 PLAYER_WOBBLE = 7
 MAX_FUEL = 100.0
-FUEL_DRAIN = 7.2
+FUEL_DRAIN = 5.2
 FUEL_GAIN = 36.0
 BULLET_SPEED = 760
 BULLET_COOLDOWN = 0.16
@@ -48,6 +48,8 @@ DEFAULT_VOLUME = 0.12
 VOLUME_STEP = 0.05
 MIN_VOLUME = 0.0
 MAX_VOLUME = 1.0
+LOW_FUEL_THRESHOLD = 28.0
+LOW_FUEL_REPEAT = 1.1
 
 TARGET_SCORES = {
     "fuel": 180,
@@ -133,6 +135,7 @@ class SoundBank:
     bomb: pygame.mixer.Sound | None
     hit: pygame.mixer.Sound | None
     fuel: pygame.mixer.Sound | None
+    low_fuel: pygame.mixer.Sound | None
     ship_hit: pygame.mixer.Sound | None
     level_up: pygame.mixer.Sound | None
 
@@ -153,6 +156,7 @@ class Session:
     state: str
     level_flash: float = 0.0
     new_high_score: bool = False
+    low_fuel_timer: float = 0.0
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -270,11 +274,17 @@ def spawn_targets(level: int) -> list[Target]:
     rng = random.Random(world_seed(level) + 900)
     targets: list[Target] = []
     x = 620.0
+    last_fuel_x = -9999.0
     while x < WORLD_LENGTH - 260:
         progress = x / WORLD_LENGTH
         floor_y = floor_height(x, level)
         kind_roll = rng.random()
-        if progress < 0.24 and kind_roll < 0.40:
+        fuel_gap = x - last_fuel_x
+        if progress < 0.52 and fuel_gap > 760:
+            kind = "fuel"
+        elif progress < 0.18 and kind_roll < 0.58:
+            kind = "fuel"
+        elif progress < 0.38 and kind_roll < 0.44:
             kind = "fuel"
         elif progress > 0.74 and kind_roll < 0.28:
             kind = "turret"
@@ -301,7 +311,9 @@ def spawn_targets(level: int) -> list[Target]:
                 cooldown=rng.uniform(0.4, 1.8),
             )
         )
-        x += rng.uniform(180, 360)
+        if kind == "fuel":
+            last_fuel_x = x
+        x += rng.uniform(160, 300) if progress < 0.52 else rng.uniform(180, 340)
     return targets
 
 
@@ -444,6 +456,7 @@ def build_sound_bank() -> SoundBank:
         bomb=build_tone(190, 0.2, volume=0.22, waveform="triangle", sweep=-90),
         hit=build_tone(155, 0.24, volume=0.28, waveform="noise", sweep=-45, noise_mix=0.35),
         fuel=build_tone(510, 0.18, volume=0.18, waveform="triangle", sweep=180),
+        low_fuel=build_tone(880, 0.12, volume=0.16, waveform="square", sweep=-90),
         ship_hit=build_tone(96, 0.46, volume=0.32, waveform="noise", sweep=-60, noise_mix=0.58),
         level_up=build_tone(430, 0.35, volume=0.16, waveform="square", sweep=280),
     )
@@ -456,6 +469,7 @@ def apply_sound_settings(sound_bank: SoundBank, settings: SoundSettings) -> None
         sound_bank.bomb,
         sound_bank.hit,
         sound_bank.fuel,
+        sound_bank.low_fuel,
         sound_bank.ship_hit,
         sound_bank.level_up,
     ):
@@ -754,6 +768,7 @@ def advance_level(session: Session, sound_bank: SoundBank, sound_settings: Sound
     session.player.position = pygame.Vector2(PLAYER_X, HEIGHT * 0.38)
     session.player.velocity = pygame.Vector2()
     session.player.invulnerability = RESPAWN_INVULN
+    session.low_fuel_timer = 0.0
     session.level_flash = 1.2
     play_sound(sound_bank.level_up)
     if session.score > session.best_score:
@@ -797,6 +812,13 @@ def update_game(session: Session, sound_bank: SoundBank, sound_settings: SoundSe
     player.bomb_cooldown = max(0.0, player.bomb_cooldown - dt)
     player.invulnerability = max(0.0, player.invulnerability - dt)
     session.level_flash = max(0.0, session.level_flash - dt)
+    session.low_fuel_timer = max(0.0, session.low_fuel_timer - dt)
+
+    if 0.0 < player.fuel <= LOW_FUEL_THRESHOLD and session.low_fuel_timer == 0.0:
+        play_sound(sound_bank.low_fuel)
+        session.low_fuel_timer = LOW_FUEL_REPEAT
+    elif player.fuel > LOW_FUEL_THRESHOLD:
+        session.low_fuel_timer = 0.0
 
     if player.fuel <= 0.0 and session.state == "playing":
         crash_player(session, sound_bank, sound_settings)
@@ -912,6 +934,7 @@ def update_game(session: Session, sound_bank: SoundBank, sound_settings: SoundSe
                 session.score += TARGET_SCORES[target.kind]
                 if target.kind == "fuel":
                     player.fuel = clamp(player.fuel + FUEL_GAIN, 0.0, MAX_FUEL)
+                    session.low_fuel_timer = 0.0
                     play_sound(sound_bank.fuel)
                 else:
                     play_sound(sound_bank.hit)
@@ -953,6 +976,7 @@ def update_game(session: Session, sound_bank: SoundBank, sound_settings: SoundSe
                 session.score += TARGET_SCORES[target.kind]
                 if target.kind == "fuel":
                     player.fuel = clamp(player.fuel + FUEL_GAIN, 0.0, MAX_FUEL)
+                    session.low_fuel_timer = 0.0
                     play_sound(sound_bank.fuel)
                 else:
                     play_sound(sound_bank.hit)
